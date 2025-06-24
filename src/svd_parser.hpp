@@ -16,20 +16,36 @@ constexpr std::uint64_t maskFromRange(std::uint64_t high, std::uint64_t low) {
     return (0xFFFFFFFFFFFFFFFFULL >> (63 - (high - low))) << low;
 }
 
-constexpr std::uint64_t
-makeResetValue(std::uint64_t parrentResetValue, std::uint64_t startBit, std::uint64_t stopBit) {
+constexpr auto assess_numbering(auto const& derived, auto const& newname) -> std::string {
+    std::string num   = derived.substr(newname.size());
+    char        hay[] = "ABCDEFGHIJKLMNOPQRSTUVW";
+    for(int i = 0; hay[i]; ++i)
+        if(num.find(hay[i]) != std::string::npos) return std::to_string(i);
+    return num;
+}
+constexpr std::uint64_t makeResetValue(std::uint64_t parrentResetValue, std::uint64_t startBit,
+                                       std::uint64_t stopBit) {
     std::uint64_t mask = maskFromRange(stopBit, startBit);
     return (parrentResetValue & mask) >> startBit;
 }
 
-constexpr std::uint64_t
-clearBits(std::uint64_t value, std::uint64_t startBit, std::uint64_t stopBit) {
+constexpr std::uint64_t clearBits(std::uint64_t value, std::uint64_t startBit,
+                                  std::uint64_t stopBit) {
     std::uint64_t mask = maskFromRange(stopBit, startBit);
     return value & (~mask);
 }
 
-using derived_t = std::tuple<std::string, std::string, std::uint64_t, bool>;
+struct derived_t {
+    std::string   name;
+    std::string   base;
+    std::uint64_t addressOffset;
+    bool          found{false};
+};
 using cluster_t = std::pair<std::vector<Peripheral>, std::string>;
+
+constexpr inline derived_t convert_derived(std::string const& derived, Peripheral const& p) {
+    return derived_t{p.name, derived, p.baseAddresses.back().address, false};
+}
 
 inline std::string remove_PercentS(std::string name) {
     auto pos = name.find("[%s]");
@@ -506,15 +522,15 @@ std::vector<Register> makeRegister(Regs const& regs, Access access, DataType typ
 
     std::vector<Register> parsedRegsDerived;
     for(auto const& d : parsedDerived) {
-        auto basename = remove_PercentS(std::get<1>(d));
+        auto basename = remove_PercentS(d.base);
         bool found    = false;
         for(auto const& r : parsedRegs) {
             if(r.name == basename) {
                 found = true;
                 parsedRegsDerived.push_back(r);
                 auto& newreg         = parsedRegsDerived.back();
-                newreg.name          = remove_PercentS(std::get<0>(d));
-                newreg.addressOffset = std::get<2>(d);
+                newreg.name          = remove_PercentS(d.name);
+                newreg.addressOffset = d.addressOffset;
                 break;
             }
         }
@@ -612,12 +628,27 @@ inline std::variant<Peripheral, cluster_t, derived_t> PeripheralFromSVD(
 
     return p;
 }
-}   // namespace
+// TODO add this is a regex replace function.. 
+constexpr auto convert_cpu_name(std::string const& name) -> std::string {
+    if(name == "CM3") return "core_m3";
+    if(name == "CM4") return "core_m4";
+    if(name == "CM7") return "core_m7";
+    if(name == "CM0") return "core_m0";
+    return name;
+}
+}  // namespace
 
 inline Chip ChipFromSVD(pugi::xml_node const& device) {
     Chip chip;
-    auto access      = getDefaultSVD(device, "access", Access::readWrite);
-    chip.name        = getCheckedSVD<std::string>(device, "name", "Chip");
+    auto access = getDefaultSVD(device, "access", Access::readWrite);
+    chip.name   = getCheckedSVD<std::string>(device, "name", "Chip");
+    auto cpu    = device.child("cpu");
+    if(!cpu.empty()) {
+        chip.cpu_name = convert_cpu_name(getCheckedSVD<std::string>(cpu, "name", "CM4"));
+        chip.mpu = getCheckedSVD<std::string>(cpu, "mpuPresent", "false") == "true";
+        chip.fpu = getCheckedSVD<std::string>(cpu, "fpuPresent", "false") == "true";
+        chip.nvic_bits = getCheckedSVD<std::uint64_t>(cpu, "nvicPrioBits", "8");
+    }
     chip.description = sanitizeDescription(getDefaultSVD(device, "description", std::string{}));
     auto width       = getDefaultSVD(device, "width", DataType::u32);
     auto size        = getDefaultSVD(device, "size", DataType::u32);
@@ -631,7 +662,17 @@ inline Chip ChipFromSVD(pugi::xml_node const& device) {
     std::vector<cluster_t> cluster;
     for(auto const& peripheral : peripherals.children("peripheral")) {
         auto pp = PeripheralFromSVD(peripheral, access, width, size);
+        if(std::holds_alternative<Peripheral>(pp))
+            for(auto const& item : chip.peripherals)
+                if(item.similar(std::get<Peripheral>(pp))) {
+                    pp = convert_derived(item.name, std::get<Peripheral>(pp));
+                    break;
+                }
         if(std::holds_alternative<derived_t>(pp)) {
+            for(auto const& item : derived)
+                if(item.name == std::get<derived_t>(pp).base) {
+                    std::get<derived_t>(pp).base = item.base;
+                }
             derived.push_back(std::get<derived_t>(pp));
         } else if(std::holds_alternative<cluster_t>(pp)) {
             cluster.push_back(std::get<cluster_t>(pp));
@@ -644,33 +685,29 @@ inline Chip ChipFromSVD(pugi::xml_node const& device) {
         std::string newName = p.name;
         RepeatType  newType = p.type;
         for(auto& d : derived) {
-            if(std::get<1>(d) != p.name) {
+            if(d.base != p.name) {
                 continue;
             }
-            if(std::get<3>(d)) {
-                throw std::runtime_error(
-                  "found derived peripheral multible times " + std::get<0>(d));
+            if(d.found) {
+                throw std::runtime_error("found derived peripheral multiple times " + d.name);
             }
 
-            auto const& derivedName = std::get<0>(d);
-
-            auto miss
-              = std::mismatch(begin(p.name), end(p.name), begin(derivedName), end(derivedName));
+            auto miss = std::mismatch(begin(p.name), end(p.name), begin(d.name), end(d.name));
             if(miss.first == end(p.name)) {
-                if(derivedName.size() != p.name.size() + 1) {
-                    fmt::print(stderr, "something wrong ? {} {}\n", p.name, derivedName);
+                if(d.name.size() != p.name.size() + 1) {
+                    fmt::print(stderr, "something wrong ? {} {}\n", p.name, d.name);
                     continue;
                 }
             }
 
-            std::get<3>(d) = true;
+            d.found = true;
 
             newType = RepeatType::cluster;
             newName.resize(static_cast<std::size_t>(std::distance(begin(p.name), miss.first)));
 
-            std::string num = derivedName.substr(newName.size());
+            std::string num = assess_numbering(d.name, newName);
 
-            p.baseAddresses.push_back(AddressType{std::stoull(num), std::get<2>(d)});
+            p.baseAddresses.push_back(AddressType{std::stoull(num), d.addressOffset});
         }
         p.name = newName;
         p.type = newType;
@@ -681,33 +718,30 @@ inline Chip ChipFromSVD(pugi::xml_node const& device) {
         RepeatType               newType = RepeatType::normal;
         std::vector<AddressType> newAddr;
         for(auto& d : derived) {
-            if(std::get<1>(d) != c.second) {
+            if(d.base != c.second) {
                 continue;
             }
-            if(std::get<3>(d)) {
-                throw std::runtime_error(
-                  "found derived peripheral multible times " + std::get<0>(d));
+            /// uhh if thing is derived we  need derived derived..
+            if(d.found) {
+                throw std::runtime_error("found derived peripheral multiple times " + d.name);
             }
 
-            auto const& derivedName = std::get<0>(d);
-
-            auto miss
-              = std::mismatch(begin(c.second), end(c.second), begin(derivedName), end(derivedName));
+            auto miss = std::mismatch(begin(c.second), end(c.second), begin(d.name), end(d.name));
             if(miss.first == end(c.second)) {
-                if(derivedName.size() != c.second.size() + 1) {
-                    fmt::print(stderr, "something wrong ? {} {}\n", c.second, derivedName);
+                if(d.name.size() != c.second.size() + 1) {
+                    fmt::print(stderr, "something wrong ? {} {}\n", c.second, d.name);
                     continue;
                 }
             }
 
-            std::get<3>(d) = true;
+            d.found = true;
 
             newType = RepeatType::cluster;
             newName.resize(static_cast<std::size_t>(std::distance(begin(c.second), miss.first)));
 
-            std::string num = derivedName.substr(newName.size());
+            std::string num = assess_numbering(d.name, newName);
 
-            newAddr.push_back(AddressType{std::stoull(num), std::get<2>(d)});
+            newAddr.push_back(AddressType{std::stoull(num), d.addressOffset});
         }
 
         for(auto& p : c.first) {
@@ -719,8 +753,8 @@ inline Chip ChipFromSVD(pugi::xml_node const& device) {
     }
 
     for(auto const& d : derived) {
-        if(!std::get<3>(d)) {
-            fmt::print(stderr, "have not found derived peripheral {}\n", std::get<0>(d));
+        if(!d.found) {
+            fmt::print(stderr, "have not found derived peripheral {}\n", d.name);
         }
     }
 

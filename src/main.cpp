@@ -2,14 +2,12 @@
 #include "generator_templates/kvasir_bit.hpp"
 #include "svd_parser.hpp"
 
-static std::function<void(inja::json const&)> getRenderer(
-  std::string const& outpath,
-  std::string const& generator,
-  int                argc,
-  char const* const* argv) {
+static std::function<void(inja::json const&)> getRenderer(std::string const& outpath,
+                                                          std::string const& generator, int argc,
+                                                          char const* const* argv) {
     auto getOutStream = [=](inja::json const& peripheral, std::string_view extension) {
         return std::ofstream{
-          fmt::format("{}/{}.{}", outpath, peripheral["name"].get<std::string>(), extension)};
+            fmt::format("{}/{}.{}", outpath, peripheral["name"].get<std::string>(), extension)};
     };
 
     if(generator == "json") {
@@ -18,23 +16,35 @@ static std::function<void(inja::json const&)> getRenderer(
         };
     } else if(generator == "kvasir_bit") {
         return
-          [=, env = Generator::Kvasir::getEnvironment()](inja::json const& peripheral) mutable {
-              getOutStream(peripheral, "hpp")
-                << env.render(Generator::Kvasir::PeripheralTemplate, peripheral);
-          };
+            [=, env = Generator::Kvasir::getEnvironment()](inja::json const& peripheral) mutable {
+                getOutStream(peripheral, "hpp")
+                    << env.render(Generator::Kvasir::PeripheralTemplate, peripheral);
+            };
+    } else if(generator == "chip_template") {
+        if(argc != 2) {
+            throw std::runtime_error(
+                "bad arguments for \"chip_template\" generator. \"template_path\" and "
+                "\"file_extension\" required");
+        }
+        return [=, file_extension = std::string{argv[1]},
+                env = Generator::Custom::getEnvironment(argv[0])](
+                   inja::json const& chip) mutable {
+            std::ofstream{
+                fmt::format("{}/{}.{}", outpath, tolower(chip["name"].get<std::string>()), file_extension)}
+                << env.render_file("chip_template.inja", chip);
+        };
     } else if(generator == "custom_template") {
         if(argc != 2) {
             throw std::runtime_error(
-              "bad arguments for \"custom_template\" generator. \"template_path\" and "
-              "\"file_extension\" required");
+                "bad arguments for \"custom_template\" generator. \"template_path\" and "
+                "\"file_extension\" required");
         }
-        return
-          [               =,
-           file_extension = std::string{argv[1]},
-           env = Generator::Custom::getEnvironment(argv[0])](inja::json const& peripheral) mutable {
-              getOutStream(peripheral, file_extension)
+        return [=, file_extension = std::string{argv[1]},
+                env = Generator::Custom::getEnvironment(argv[0])](
+                   inja::json const& peripheral) mutable {
+            getOutStream(peripheral, file_extension)
                 << env.render_file("/peripheral_template.inja", peripheral);
-          };
+        };
     } else {
         throw std::runtime_error("bad generator");
     }
@@ -45,15 +55,16 @@ int main(int argc, char const* const* argv) {
         using inja::json;
         if(argc < 4) {
             throw std::runtime_error(
-              "wrong args use with \"svdfile\" \"outpath\" \"generator\""
-              " \"[<template path for custom_template>]\""
-              " \"[<file extension for custom_template>]\"");
+                "wrong args use with \"svdfile\" \"outpath\" \"generator\""
+                " \"[<template path for custom_template>]\""
+                " \"[<file extension for custom_template>]\"");
         }
         std::string svdfile   = argv[1];
         std::string outpath   = argv[2];
         std::string generator = argv[3];
 
-        if(generator != "kvasir_bit" && generator != "json" && generator != "custom_template") {
+        if(generator != "chip_template" && generator != "kvasir_bit" && generator != "json" &&
+           generator != "custom_template") {
             throw std::runtime_error("bad generator");
         }
 
@@ -69,12 +80,16 @@ int main(int argc, char const* const* argv) {
 
         inja::json chip = ChipFromSVD(device);
 
-        auto render = getRenderer(outpath, generator, argc - 4, argv + 4);
+        if(generator == "chip_template") {
+            auto render = getRenderer(outpath, generator, argc - 4, argv + 4);
+            render(chip);
+        } else {
+            auto render = getRenderer(outpath, generator, argc - 4, argv + 4);
 
-        for(auto const& p : chip["peripherals"]) {
-            render(p);
+            for(auto const& p : chip["peripherals"]) {
+                render(p);
+            }
         }
-
         return 0;
     } catch(std::exception const& e) {
         fmt::print(stderr, "catched {}\n", e.what());
