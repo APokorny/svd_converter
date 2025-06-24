@@ -1,5 +1,7 @@
-
 #pragma once
+#include <stdexcept>
+#include "svd_types.hpp"
+#include "fmt_wrapper.hpp"
 #include "inja_wrapper.hpp"
 
 namespace Generator {
