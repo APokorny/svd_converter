@@ -1,4 +1,6 @@
 cmake_minimum_required(VERSION 3.18)
+list(APPEND CMAKE_MODULE_PATH ${CMAKE_CURRENT_LIST_DIR})
+include(get_cpm)
 
 if(TARGET svd_converter)
   return()
@@ -11,17 +13,10 @@ if(NOT CMAKE_CROSSCOMPILING)
   include(cmake_helpers/BuildOptions.cmake)
   include(cmake_helpers/FindOrFetch.cmake)
 
-  find_or_fetch_package(fmt 11.1 GIT_REPOSITORY https://github.com/fmtlib/fmt.git
-                        GIT_TAG master)
-  find_or_fetch_package(nlohmann_json 3.11 GIT_REPOSITORY
-                        https://github.com/nlohmann/json GIT_TAG master)
-  find_or_fetch_package(pugixml 1.15 GIT_REPOSITORY
-                        https://github.com/zeux/pugixml GIT_TAG master)
-  option(INJA_USE_EMBEDDED_JSON "" OFF)
-  option(INJA_BUILD_TESTS "" OFF)
-  option(BUILD_BENCHMARK "" OFF)
-  find_or_fetch_package(inja 3.4 GIT_REPOSITORY https://github.com/pantor/inja
-                        GIT_TAG main)
+  CPMAddPackage(URI "gh:nlohmann/json@3.11.3" OPTIONS "JSON_BuildTests OFF")
+  CPMAddPackage("gh:fmtlib/fmt#11.2.0")
+  CPMAddPackage("gh:zeux/pugixml@1.15")
+  CPMAddPackage(URI "gh:pantor/inja@3.4.0" OPTIONS "INJA_USE_EMBEDDED_JSON OFF;INJA_BUILD_TESTS OFF;BUILD_BENCHMARK OFF")
 
   add_executable(svd_converter src/main.cpp)
 
