@@ -1,6 +1,7 @@
 #include "generator_templates/custom.hpp"
 #include "generator_templates/kvasir_bit.hpp"
 #include "svd_parser.hpp"
+#include "generator_utils.hpp"
 
 static std::function<void(inja::json const&)> getRenderer(std::string const& outpath,
                                                           std::string const& generator, int argc,
