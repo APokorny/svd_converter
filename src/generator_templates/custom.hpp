@@ -1,6 +1,7 @@
 #pragma once
 
 #include "inja_wrapper.hpp"
+#include "common_env.hpp"
 
 #include <string>
 
